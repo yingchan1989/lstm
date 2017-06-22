@@ -1,0 +1,1394 @@
+---
+title: "Section 1 - LTSM for SPY Predictions - Preparing Data"
+author: "Ying Chan"
+date: "6/3/2017"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive summary
+
+This paper comes in two sections. This first section will be done in R, and will explore the following topics:
+
+1. Exploratory data analysis
+
+2. Cleaning and transforming the data
+
+3. Feature selection (with continued discussion in Section 2)
+
+The second section will be mainly covering the machine learning algorithm in Python Keras. It will include the actual modeling procedure, and cover the remaining topics:
+
+4. Preventing overfitting
+
+5. Model evaluation criteria
+
+6. Determing parameters for machine learning methods
+
+It will also cover performance analysis and potential improvements and next steps.
+
+In this paper, we explore each financial variable provided in detail, and perform feature engineering to create new variables that can potentially improve performance of the overall model. We employed a special kind of recurrent neural networks model, known as the Long Short Term Memory (LSTM) model, to model long term dependencies in the data through the use of memory cells. We iteratively improved the model and evaluated its performance using accuracy and return performance. 
+
+## Exploratory data analysis
+
+The first step in data exploration would be to observe the distributions of the data as well as the time series trend of each variable. Scatter plots and cross correlation functions are typically plotted to observe relationships between the variable of interest and the variable we are trying to predict. We will look at each variable independently and understand what the variable means on a fundamental level, and understand how it might affect the variable we are trying to predict. Feature engineering is performed where the change in the variable indicates strong correlation to the predicted variable, as well as when fundamental reasoning indicates potential strong correlation between interacting variables. 
+
+We will explore and analyze each variable in detail in the Feature engineering section after cleaning the data.  
+
+## Cleaning and transforming data
+
+Financial time series data is typically not clean due to missing variables. 
+
+Imputation is typically used for time series data that have missing values at certain time points. There are various imputation techniques such as interpolation and the use of splines. We have employed the use of a technique known as Kalman smoothing, which uses an ARIMA model to model the time series and calculates a fitted estimate. The imputed values are plotted along-side the existing time series data to ensure that the values are reasonable within the overall time series. A couple of examples are plotted below to illustrate this idea.
+
+In terms of transforming the data, variables are typically normalized (e.g. between 0 and 1) for better training performance. We will apply normalization for our all of the variables and discuss further in Section 2 of this paper where the machine learning model is applied. 
+
+If time series appear to have an exponential-like trend, log transformations or differencing transformations could be employed on the predicted variable. However since it is a return variable that we are trying to predict, it does not appear to warrant a transformation.
+
+
+```{r cars}
+setwd("/Users/YingChan/Documents/")
+#setwd("C:/Users/ChanYin/Documents/SPY/")
+library(imputeTS)
+
+data <- read.csv("marketdata.csv", header=TRUE, stringsAsFactors = FALSE)
+summary(data)
+
+BASPTDSP_imp <- na.kalman(data$BASPTDSP, model = "auto.arima")
+plotNA.imputations(data$BASPTDSP, BASPTDSP_imp)
+data$BASPTDSP <- BASPTDSP_imp
+
+BDIY_imp <- na.interpolation(data$BDIY, option = "spline")
+plotNA.imputations(data$BDIY, BDIY_imp)
+data$BDIY <- BDIY_imp
+
+data$CCI <- na.kalman(data$CCI, model = "auto.arima")
+data$CL1.Comdty <- na.kalman(data$CL1.Comdty, model = "auto.arima")
+data$CO1.Comdty <- na.kalman(data$CO1.Comdty, model = "auto.arima")
+data$CSFB <- na.kalman(data$CSFB, model = "auto.arima")
+data$HG1.Comdty <- na.kalman(data$HG1.Comdty, model = "auto.arima")
+data$IBOXHY <- na.kalman(data$IBOXHY, model = "auto.arima")
+data$LF98TRUU <- na.kalman(data$LF98TRUU, model = "auto.arima")
+data$MOVE <- na.kalman(data$MOVE, model = "auto.arima")
+data$MRI.CITI <- na.kalman(data$MRI.CITI, model = "auto.arima")
+data$MRI.ST <- na.kalman(data$MRI.ST, model = "auto.arima")
+data$PCUSSPXR <- na.kalman(data$PCUSSPXR, model = "auto.arima")
+data$RLABVPTU <- na.kalman(data$RLABVPTU, model = "auto.arima")
+data$SKEW <- na.kalman(data$SKEW, model = "auto.arima")
+data$SUM.INX <- na.kalman(data$SUM.INX, model = "auto.arima")
+data$US1.COMB.Comdty <- na.kalman(data$US1.COMB.Comdty, model = "auto.arima")
+data$VOLSPX.Index.MOV_AVG_10D <- na.kalman(data$VOLSPX.Index.MOV_AVG_10D, model = "auto.arima")
+data$VOLSPX.Index.MOV_AVG_20D <- na.kalman(data$VOLSPX.Index.MOV_AVG_20D, model = "auto.arima")
+data$VOLSPX.Index.MOV_AVG_50D <- na.kalman(data$VOLSPX.Index.MOV_AVG_10D, model = "auto.arima")
+data$VOLSPX <- na.kalman(data$VOLSPX, model = "auto.arima")
+```
+
+## Feature engineering
+
+In this part, we will investigate each variable in detail and observe the relationships between the time series of the variable and the predicted variable. We will start with plotting the time series as well as simple scatter plots. We will also look at a variation of the cross correlation function, in particular the correlation between Y(t) and X(t) - X(t-k) for lag k. Although CCFs are typically used for stationary processes (i.e. time series that do not have trends), machine learning algorithms are not affected by trending data. We have outlined the code below, which will investigate the correlation between a range of lagged variables.
+
+In terms of selecting variables for removal, we will investigate this further in the last part of this section in this paper: Feature selection: Appendix Code. Further discussion on feature selection is also detailed in Section 2. 
+
+```{r CorrelationFunction, echo=TRUE}
+library(ggplot2)
+lag.corr <- function(y,x) {
+  x_diff1 <- c(0,diff(x,1))
+  x_diff5 <- c(0,0,0,0,0,diff(x,5))
+  x_diff10 <- c(0,0,0,0,0,0,0,0,0,0,diff(x,10))
+  x_diff20 <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(x,20))
+  x_diff40 <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(x,40))
+  data <- c(cor(y,x_diff1), cor(y,x_diff5), cor(y,x_diff10), cor(y,x_diff20),cor(y,x_diff40))
+  barplot(data, names.arg = c(1,5,10,20,40))
+}
+
+```
+
+If there exists meaningful correlation, both statistcally and on a fundamental reasoning basis, on those lags, we will add a difference lag as a new feature to the model. We will typically focus on closer lags, as because we will be applying a recurrent neural network (RNN) based machine learning algorithm, where it will take into account of any further historical information in its memory as needed through its learning process. We will discuss this in more detail in Section 2: Machine Learning model.
+
+Other feature engineering methods we will apply include interactions with other variables where it would deem to be significantly important fundamentally or on a technical analysis perspective. For example, for technical indicators, we will investigate the bands at which those indicators typically oscillate and create indicator variables when the oscillator indiates overbought or oversold territories.
+
+In terms of removing features from the model, we will run various variable importance exercises on our final set of feature engineered samples, and will see whether removing worst performing variables from the model would create better results. This step will be detailed in Section 2 in the modeling section. 
+
+### TED Spread
+TED spreads are typically used to monitor the changes in credit risk. High values typically signal signs of distress. The correlation is strongly negative, around -0.18, which is expected as signs of distress indicates a poor economic environment, hence lower returns. We investigated whether changes in the TED spread value could potentially be a predictive factor of short term market returns. However the correlation is low hence we have not included the differenced variable. This could indicate that the level of the TED spread is of more significance than changes in it. 
+
+```{r BASPTDSP, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$BASPTDSP, main="TED Spread", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$BASPTDSP, data$fwdRet20D, main="Scatterplot", xlab="TED Spread", ylab="Return of SPY", pch=19)
+lag.corr(data$fwdRet20D, data$BASPTDSP)
+
+BASPTDSP_diff <- c(0,diff(data$BASPTDSP))
+plot(BASPTDSP_diff, data$fwdRet20D, main="Scatterplot", xlab="TED Spread", ylab="Return of SPY", pch=19)
+
+cor(data$BASPTDSP,data$fwdRet20D)
+cor(BASPTDSP_diff,data$fwdRet20D)
+
+```
+
+### Baltic Dryship Index
+The Baltic dryship index typically reflects global economic import/export activity on the use of dryships. Given the high dollar value of the index, the change in the index could reflect changes in global activity. The correlation between the difference of the index is relatively strong and positive at 0.08, and much more intuitive than that observed for the actual level. We will add the differenced variable to our model. 
+
+```{r BDIY, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$BDIY, main="Baltic Dryship Index", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$BDIY, data$fwdRet20D, main="Scatterplot", xlab="Baltic Dryship Index", ylab="Return of SPY", pch=19)
+lag.corr(data$fwdRet20D, data$BDIY)
+
+BDIY_diff <- c(0,diff(data$BDIY))
+plot(BDIY_diff, data$fwdRet20D, main="Scatterplot", xlab="Baltic Dryship Index", ylab="Return of SPY", pch=19)
+
+cor(data$BDIY,data$fwdRet20D)
+cor(BDIY_diff,data$fwdRet20D)
+
+data$BDIY_diff <- BDIY_diff
+
+```
+
+### Commodity Index
+The commodity index typically reflects economic activity and demand for commodities in the industrial sector on a global level. A high commodity index typically indicates inflation and improving economic activity, hence the positive correlation with stock prices. However, changes in the commodity index (i.e. increase in prices) creates higher cost as many industries rely on oil, from transportation to retail to manufacturing. This could lead to lower EPS, hence we observe a negative correlation on the changes in the index to SPY returns.
+
+We will include both the short term and long term lags to the model, as we believe this to capture both dynamics pretty well.
+
+#### CCI
+The Continuous Commodity Futures Price Index is a weighted averge of commodity price levels.
+
+```{r CCI, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$CCI, main="Commodity Index", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$CCI, data$fwdRet20D, main="Scatterplot", xlab="Commodity Index", ylab="Return of SPY", pch=19)
+lag.corr(data$fwdRet20D, data$CCI)
+
+CCI_diff <- c(0,diff(data$CCI,1))
+CCI_diff40 <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$CCI,40))
+plot(CCI_diff, data$fwdRet20D, main="Scatterplot", xlab="Commodity Index", ylab="Return of SPY", pch=19)
+
+cor(data$CCI,data$fwdRet20D)
+cor(CCI_diff,data$fwdRet20D)
+
+data$CCI_diff <- CCI_diff
+data$CCI_diff40 <- CCI_diff40
+```
+
+#### CL1.Comdty
+
+This is the WTI Crude Oil Future.
+
+```{r CL1, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$CL1.Comdty, main="Commodity Index", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$CL1.Comdty, data$fwdRet20D, main="Scatterplot", xlab="Commodity Index", ylab="Return of SPY", pch=19)
+lag.corr(data$fwdRet20D, data$CL1.Comdty)
+
+CL1_diff <- c(0,diff(data$CL1.Comdty,1))
+CL1_diff40 <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$CL1.Comdty,40))
+plot(CL1_diff, data$fwdRet20D, main="Scatterplot", xlab="Commodity Index", ylab="Return of SPY", pch=19)
+
+cor(data$CL1.Comdty,data$fwdRet20D)
+cor(CL1_diff,data$fwdRet20D)
+
+data$CL1_diff <- CL1_diff
+data$CL1_diff40 <- CL1_diff40
+```
+
+####  CO1.Comdty
+
+This is the Brent Crude Oil Future. 
+
+```{r CO1.Comdty, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$CO1.Comdty, main="Commodity Index", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$CO1.Comdty, data$fwdRet20D, main="Scatterplot", xlab="Commodity Index", ylab="Return of SPY", pch=19)
+lag.corr(data$fwdRet20D, data$CO1.Comdty)
+
+C01_diff <- c(0,diff(data$CO1.Comdty))
+C01_diff40 <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$CO1.Comdty,40))
+plot(C01_diff, data$fwdRet20D, main="Scatterplot", xlab="Commodity Index", ylab="Return of SPY", pch=19)
+
+cor(data$CO1.Comdty,data$fwdRet20D)
+cor(C01_diff,data$fwdRet20D)
+
+data$CO1.Comdty_diff <- C01_diff
+data$CO1.Comdty_diff40 <- C01_diff40
+```
+
+### Financial Distress Index
+We would expect a negative correlation between the distress and the market returns in general, however the plot of the index shows a buildup of stress prior to the financial crisis, serving as an early warning indicator to future downward movements in the stock. This could potentially lead to the positive correlation that we are observing. Differencing of the variable suggested an even higher correlation at 0.04.
+
+```{r CLF.CFSI, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$CLF.CFSI, main="Financial Distress", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$CLF.CFSI, data$fwdRet20D, main="Scatterplot", xlab="Financial Distress", ylab="Return of SPY", pch=19)
+lag.corr(data$fwdRet20D, data$CLF.CFSI)
+
+CLF_diff <- c(0,diff(data$CLF.CFSI))
+plot(CLF_diff, data$fwdRet20D, main="Scatterplot", xlab="Financial Distress", ylab="Return of SPY", pch=19)
+
+cor(data$CLF.CFSI,data$fwdRet20D)
+cor(CLF_diff,data$fwdRet20D)
+
+data$CLF_diff <- CLF_diff
+```
+
+### CS Fear Barometer
+The CS Fear barometer is positively correlated on a level basis as the fear barometer is constantly rising as the market has improved (possibly due to market cautiousness), yet differencing this variable shows a strong negative correlation, which jives with intuition that day to day fluctuations in markets correlaive negatively to the fear barometer. We have included both the variable and the differenced variable as we believe this helps capture both dynamics in market sentiment. 
+
+```{r CSFB, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$CSFB, main="CS Fear Barometer", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$CSFB, data$fwdRet20D, main="Scatterplot", xlab="CS Fear Barometer", ylab="Return of SPY", pch=19)
+lag.corr(data$fwdRet20D, data$CSFB)
+
+CSFB_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$CSFB,20))
+plot(CSFB_diff, data$fwdRet20D, main="Scatterplot", xlab="CS Fear Barometer", ylab="Return of SPY", pch=19)
+
+cor(data$CSFB,data$fwdRet20D)
+cor(CSFB_diff,data$fwdRet20D)
+
+data$CSFB_diff <- CSFB_diff
+```
+
+### Barclays US Corporate HY - 10 Year Treasury
+We observe a similar pattern in correlation with the Barclays US Corporate High Yield minus the 10 year treasury spread, as the TED spread. This variable is a measure of credit risk and distress in corporate debt. 
+
+```{r CSI.BARC, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$CSI.BARC, main="Barclays Spread", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$CSI.BARC, data$fwdRet20D, main="Scatterplot", xlab="Barclays Spread", ylab="Return of SPY", pch=19)
+lag.corr(data$fwdRet20D, data$CSI.BARC)
+
+CSI.BARC_diff <- c(0,diff(data$CSI.BARC))
+plot(CSI.BARC_diff, data$fwdRet20D, main="Scatterplot", xlab="Barclays Spread", ylab="Return of SPY", pch=19)
+
+cor(data$CSI.BARC,data$fwdRet20D)
+cor(CSI.BARC_diff,data$fwdRet20D)
+
+```
+
+### Dollar Index
+The dollar index and the movements in the dollar index suggests the strength in the US economy. However, since many companies have overseas earnings, a stronger dollar typically affects the bottom line and hence a lower stock price. We observe a strong negative correlation (of -0.07) on the dollar index level, but did not observe as strong a correlation on the difference. We will not include a lagged difference variable to our model in this case. 
+
+```{r DXY.Curncy, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$DXY.Curncy, main="Dollar Index", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$DXY.Curncy, data$fwdRet20D, main="Scatterplot", xlab="Dollar Index", ylab="Return of SPY", pch=19)
+#ccf(data$DXY.Curncy, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$DXY.Curncy)
+
+cor(data$DXY.Curncy,data$fwdRet20D)
+```
+
+### Global Financial Stress Index
+
+This index, unlike the CLF CFSI index, does not appear to serve as an early warning build up signal, hence shows a negative correlation with the SPY future returns. A strong negative correlation between the differenced variable and the predicted variable is also observed. We will include both the level variable as well as the change in the variable. 
+
+```{r GFSI, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$GFSI, main="Financial Distress", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$GFSI, data$fwdRet20D, main="Scatterplot", xlab="Financial Distress", ylab="Return of SPY", pch=19)
+#ccf(data$GFSI, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$GFSI)
+
+GFSI_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$GFSI,20))
+plot(GFSI_diff , data$fwdRet20D, main="Scatterplot", xlab="Financial Distress", ylab="Return of SPY", pch=19)
+
+cor(data$GFSI ,data$fwdRet20D)
+cor(GFSI_diff,data$fwdRet20D)
+data$GFSI_diff <- GFSI_diff
+
+```
+
+
+### GSERMAJ
+The Goldman Sachs MAP Economic Surprise Index for AeJ showed a relatively strong positive correlation with the future returns. This could indicate that surprises created buying opportunities in the market, as buying on dips based on these surprises, turned out to be a viable trading rule. We did not observe as strong of a correlation on the differenced variable.
+
+```{r GSERMAJ, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$GSERMAJ, main="GS Surprise Index AeJ", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$GSERMAJ, data$fwdRet20D, main="Scatterplot", xlab="GS MAP AeJ", ylab="Return of SPY", pch=19)
+#ccf(data$GSERMAJ, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$GSERMEA)
+
+cor(data$GSERMAJ ,data$fwdRet20D)
+
+
+```
+
+### GSERMEA
+The Goldman Sachs MAP Economic Surprise Index for Euro also showed a similar positive correlation with the future SPY returns, similar to the AeJ. 
+
+```{r GSERMEA, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$GSERMEA, main="GS Surprise Index Euro", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$GSERMEA, data$fwdRet20D, main="Scatterplot", xlab="GS Surprise Index Euro", ylab="Return of SPY", pch=19)
+#ccf(data$GSERMEA, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$GSERMEA)
+
+cor(data$GSERMEA ,data$fwdRet20D)
+
+```
+
+### GSERMUS
+The Goldman Sachs MAP Economic Surprise Index for US again showed strong positive correlation with future SPY returns. This again appears to confirm the buying on dips strategy with the collection of surprise indices. 
+
+```{r GSERMUS, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$GSERMUS, main="GS Surprise Index", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$GSERMUS, data$fwdRet20D, main="Scatterplot", xlab="GS Surprise Index", ylab="Return of SPY", pch=19)
+#ccf(data$GSERMUS, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$GSERMUS)
+
+cor(data$GSERMUS ,data$fwdRet20D)
+
+```
+
+### GSERMWD
+The Goldman Sachs MAP Economic Surprise Index for the World shows the strong correlation we expect again. Once again, the differenced variable did not show as strong a correlation as it did with the level, hence, we will not include the differenced variable to our model.
+
+```{r GSERMWD, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$GSERMWD, main="GS Surprise Index", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$GSERMWD, data$fwdRet20D, main="Scatterplot", xlab="GS Surprise Index", ylab="Return of SPY", pch=19)
+#ccf(data$GSERMWD, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$GSERMWD)
+
+cor(data$GSERMWD ,data$fwdRet20D)
+
+```
+
+### Copper Price
+Copper price usually indicates industrial economic activity on a global scale. There is a positive correlation between the price level of copper as well as the change in price of copper. This is unlike the correlation we observed for the change in price of the commodity indices (which are primarily weighted heavily in oil). Higher oil prices could potentially impact bottom line as oil is a driver of cost in many industries. This makes sense since copper is less of a driver of cost in industries in the SPY than oil, and higher copper prices typically indicate heightened activity and demand in industrial sectors. We observe a high correlation on the 40 lagged difference return against the SPY 20 day return and have included this difference into our model. 
+
+```{r HG1.Comdty, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$HG1.Comdty, main="Copper", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$HG1.Comdty, data$fwdRet20D, main="Scatterplot", xlab="Copper", ylab="Return of SPY", pch=19)
+#ccf(data$HG1.Comdty, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$HG1.Comdty)
+
+HG1.Comdty_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$HG1.Comdty,40))/data$HG1.Comdty
+
+cor(data$HG1.Comdty ,data$fwdRet20D)
+cor(HG1.Comdty_diff,data$fwdRet20D)
+
+data$HG1.Comdty_diff <- HG1.Comdty_diff
+
+```
+
+### iBoxx High Yield Index
+The iBoox high yield corporate bond index is positively correlated with the performance of the SPY. Demand for these products are high when growth is hard to come by, as the market began to recover near the early stages of the bull market. These act as substitutes to treasuries as they provide higher yield as investors seek for higher return and risk. A high correlation on the index itself does not appear to warrant adding the differenced lagged term. 
+
+```{r IBOXHY, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$IBOXHY, main="iBoxx", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$IBOXHY, data$fwdRet20D, main="Scatterplot", xlab="iBoxx", ylab="Return of SPY", pch=19)
+#ccf(data$IBOXHY, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$IBOXHY)
+
+cor(data$IBOXHY ,data$fwdRet20D)
+
+```
+
+### Money Market Flow Index
+Typically money flows out of money market funds when the economy improves, and flows into them when the market is not doing well. This trend is significant when plotted, as we can see in the time series charts below. Surprisingly, we observe a positive correlation with our predicted variable. The variable we are trying to predict is a 20 day forward SPY return which is relatively short to medium term, and a high money market flow index could indicate a temporary sell off in the stock prices. This could explain a positive correlation as the market reverts back to the mean. 
+
+We will incorporate both the differenced lag term as well as hte level of the index as variables in our model.
+
+```{r IFLOIMM, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$IFLOIMM, main="IFLOIMM", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$IFLOIMM, data$fwdRet20D, main="Scatterplot", xlab="IFLOIMM", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+#ccf(data$IFLOIMM, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$IFLOIMM)
+
+IFLOIMM_diff <- c(0,diff(data$IFLOIMM,1))
+
+cor(data$IFLOIMM ,data$fwdRet20D)
+cor(IFLOIMM_diff,data$fwdRet20D)
+
+data$IFLOIMM_diff <- IFLOIMM_diff
+
+```
+
+### Volume Flow Index
+This index shows the level of conviction in daily equity moves. We expect and observe a positive correlation between the index value to the SPY movements, as well as positive changes in this index to positive changes in SPY. We observe a strong correlation around the 20th differenced lag and will include this into our model. 
+
+```{r IFLOIVOL, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$IFLOIVOL, main="IFLOIVOL", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$IFLOIVOL, data$fwdRet20D, main="Scatterplot", xlab="IFLOIVOL", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$IFLOIVOL)
+#ccf(data$IFLOIVOL, data$fwdRet20D, lag.max=50)
+
+IFLOIVOL_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$IFLOIVO,20))
+
+cor(data$IFLOIVO ,data$fwdRet20D)
+cor(IFLOIVOL_diff,data$fwdRet20D)
+
+data$IFLOIVOL_diff <- IFLOIVOL_diff
+
+```
+
+
+### Liquidity Risk Index
+This index shows the liquidity risk in the financial sector and we would expect a negative correlation between the index value to the SPY movements, as well as changes in this index to changes in SPY. We observe strong negative correlation (-0.12) around the 40th differenced lag and we will include both of these variables into our model. 
+
+```{r IRISILIQ, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$IRISILIQ, main="IRISILIQ", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$IRISILIQ, data$fwdRet20D, main="Scatterplot", xlab="IRISILIQ", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+#ccf(data$IRISILIQ, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$IRISILIQ)
+
+IRISILIQ_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$IRISILIQ,40))
+
+cor(data$IRISILIQ ,data$fwdRet20D)
+
+data$IRISILIQ_diff <- IRISILIQ_diff
+```
+
+
+## Market Risk Index
+Similar to the index above, we expect a negative correlation between the index value to the SPY movements, as well as changes in this index to changes in SPY. We observe strong negative correlation around the 20th differenced lag and will include into our model. 
+
+```{r IRISIMKT, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$IRISIMKT, main="IRISIMKT", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$IRISIMKT, data$fwdRet20D, main="Scatterplot", xlab="IRISIMKT", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+#ccf(data$IRISIMKT, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$IRISIMKT)
+
+IRISIMKT_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$IRISIMKT,20))
+
+cor(IRISIMKT_diff,data$fwdRet20D)
+
+data$IRISIMKT_diff <- IRISIMKT_diff
+```
+
+## Sovlency Risk Index
+Similar to the index above, we would expect a negative correlation between the index value to the SPY movements, as well as changes in this index to changes in SPY. However, interestingly we observe a positive correlation between the two. We observe strong correlation around the 5th differenced lag and will include into our model.
+
+```{r IRISISOL, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$IRISISOL, main="IRISISOL", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$IRISISOL, data$fwdRet20D, main="Scatterplot", xlab="IRISISOL", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+#ccf(data$IRISISOL, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$IRISISOL)
+
+cor(data$IRISISOL ,data$fwdRet20D)
+
+IRISISOL_diff <- c(0,0,0,0,0,diff(data$IRISISOL,5))
+
+data$IRISISOL_diff <- IRISISOL_diff
+```
+
+### Equity Skew Index
+The equity skew index indicates demand for downside protection, hence we would epxect negative correlation between the returns and the changes in this index, as well as the level of the index. The results show a negative correlation of -0.12 at the 20th lag difference. We will include both the level and the differenced variable to our model. We believe changes in fear and in this index could help capture such market sentiment. 
+
+```{r ISKEIEQ, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$ISKEIEQ, main="ISKEIEQ", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$ISKEIEQ, data$fwdRet20D, main="Scatterplot", xlab="ISKEIEQ", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+#ccf(data$ISKEIEQ, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$ISKEIEQ)
+
+cor(data$ISKEIEQ ,data$fwdRet20D)
+
+ISKEIEQ_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$ISKEIEQ,20))
+
+data$ISKEIEQ_diff <- ISKEIEQ_diff
+```
+### FX Skew Index
+The FX skew index shows relative demand for large swings in the currency markets. The below results indicate that negative correlation between the level and the 20th lag difference. Strong demand in large swings in currency markets typically indicate that the global economy in either the Euro region or the US region could be under stress, hence the market could take a breather to reflect the deteriorating economic situations. Changes in the currency market typically reflect larger macro trends at work, hence selloffs in such scenarios are generally not short lived. 
+
+```{r ISKEIFX, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$ISKEIFX, main="ISKEIFX", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$ISKEIFX, data$fwdRet20D, main="Scatterplot", xlab="ISKEIFX", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+#ccf(data$ISKEIFX, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$ISKEIFX)
+
+cor(data$ISKEIFX ,data$fwdRet20D)
+
+ISKEIFX_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$ISKEIFX,20))
+
+data$ISKEIFX_diff <- ISKEIFX_diff
+```
+
+### Bloomberg Barclays US Corporate High Yield Total Return Index 
+The Bloomberg Barclays US Corporate High Yield Total Return Index shows high yield demand. We expect the relationship to be similar to that observed in the iBoxx High Yield Index, i.e. a positive correlation. We observe a strong positive correlation of 0.106. A high correlation in the level did not appear to warrant adding a differenced term. 
+
+```{r LF98TRUU, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$LF98TRUU, main="LF98TRUU", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$LF98TRUU, data$fwdRet20D, main="Scatterplot", xlab="LF98TRUU", ylab="Return of SPY", pch=19)
+#plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+ccf(data$LF98TRUU, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$LF98TRUU)
+
+cor(data$LF98TRUU ,data$fwdRet20D)
+
+```
+
+### Merrill Option Volatility Estimate
+The MOVE Index shows the implied volatility on treasury options. High volatility in the treasury market could reflect market fear, and hence a negative correlation is expected and observed.. We notice also that there is a relatively strong negative correlation on the 20th lag difference and hence included this into our model.
+
+```{r MOVE, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$MOVE, main="MOVE", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$MOVE, data$fwdRet20D, main="Scatterplot", xlab="MOVE", ylab="Return of SPY", pch=19)
+#plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+ccf(data$MOVE, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$MOVE)
+
+cor(data$MOVE ,data$fwdRet20D)
+
+MOVE_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$MOVE,20))
+
+data$MOVE_diff <- MOVE_diff
+```
+
+### Citi Macro Risk Index
+The Citi MRI is a measure of risk aversion. A negative correlation is expected and also observed. We notice a relatively smaller correlation for the differenced lag is on the 10th lag, which we also added to the model. 
+
+```{r MRI.CITI, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$MRI.CITI, main="MRI.CITI", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$MRI.CITI, data$fwdRet20D, main="Scatterplot", xlab="MRI.CITI", ylab="Return of SPY", pch=19)
+#plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+ccf(data$MRI.CITI, data$fwdRet20D, lag.max=50)
+lag.corr(data$fwdRet20D, data$MRI.CITI)
+
+cor(data$MRI.CITI ,data$fwdRet20D)
+
+MRI.CITI_diff <- c(0,0,0,0,0,0,0,0,0,0,diff(data$MRI.CITI,10))
+
+data$MRI.CITI_diff <- MRI.CITI_diff
+```
+
+### Citi Macro Risk Index Stationary
+The Citi Macro Risk Index appears to be a stationary time seris of the Citi Macro Risk Index. The differencing used is unknown however the correlation is slightly negative. We will not add a differenced term on this already stationary time series.
+
+```{r MRI.ST, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$MRI.ST, main="MRI.ST", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$MRI.ST, data$fwdRet20D, main="Scatterplot", xlab="MRI.ST", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+ccf(data$MRI.ST, data$fwdRet20D, lag.max=50)
+
+cor(data$MRI.ST ,data$fwdRet20D)
+
+```
+
+### New High New Low
+The New High New Low ratio appears to act as a mean reversion leading indicator due to its negative correlation with the SPY returns. A high ratio seems to indicate overbought activity, while a low ratio indicates oversold activity. This is most likely due to the fact that we are observing a 20day return on the SPY which is a relatively short term window (as opposed to yearly returns), whereby a high New High New Low ratio could indicate longer term market improvement. 
+
+We included both the differenced lagged variable and the ratio level to our model. 
+
+```{r NWHLNYHL, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$NWHLNYHL, main="NWHLNYHL", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$NWHLNYHL, data$fwdRet20D, main="Scatterplot", xlab="NWHLNYHL", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$NWHLNYHL)
+
+cor(data$NWHLNYHL ,data$fwdRet20D)
+
+NWHLNYHL_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$NWHLNYHL,20))
+
+data$NWHLNYHL_diff <- NWHLNYHL_diff
+
+```
+
+### Put/Call Ratio on Equity
+A high put/call ratio is typically reflective of postive future movements in stock price (especially in a 20 day time window) as traders get exposure to puts relative to calls at a near term bottom. This is reflected in the positive correlation between the two time series. We observe a strong correlation on the differenced 40th lag, and we will include both variables to our model. 
+
+```{r PCUSEQTR, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$PCUSEQTR, main="PCUSEQTR", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$PCUSEQTR, data$fwdRet20D, main="Scatterplot", xlab="PCUSEQTR", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$PCUSEQTR)
+
+cor(data$PCUSEQTR ,data$fwdRet20D)
+
+PCUSEQTR_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$PCUSEQTR,40))
+
+data$PCUSEQTR_diff <- PCUSEQTR_diff
+
+```
+
+### Put/Call Ratio on SPY
+A high put/call ratio is typically reflective of postive future movements in stock price (especially in a 20 day time window) as traders get exposure to puts relative to calls at a near term bottom. This is reflected in the positive correlation between the two time series, and a positive correlation on the differenced lag at 20 as well. This behaviour in the variable is similar to the Put/Call Ratio on Equities previously. 
+
+```{r PCUSSPXR, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$PCUSSPXR, main="PCUSSPXR", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$PCUSSPXR, data$fwdRet20D, main="Scatterplot", xlab="PCUSSPXR", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$PCUSSPXR)
+
+cor(data$PCUSSPXR ,data$fwdRet20D)
+
+PCUSSPXR_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$PCUSSPXR,20))
+
+data$PCUSSPXR_diff <- PCUSSPXR_diff
+
+```
+
+### Variance Premium Trading Index USD
+The risklab index is created to generate positive returns when implied volatilities are greater than realized volatilities. Implied volatility typically overestimates true volatility over time and we observe a positive correlation between this and the returns on SPY. We observe a strong positive correlation (0.105) with the SPY returns as the margin on this index would shrink in a market wide sell off. 
+
+We also observe a strong correlation on the change in this index on the 40th lag, and have included this into our model. 
+
+```{r RLABVPTU , echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$RLABVPTU, main="RLABVPTU", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$RLABVPTU, data$fwdRet20D, main="Scatterplot", xlab="RLABVPTU", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$RLABVPTU)
+
+cor(data$RLABVPTU ,data$fwdRet20D)
+
+RLABVPTU_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$RLABVPTU,40))
+
+data$RLABVPTU_diff <- RLABVPTU_diff
+
+```
+
+### CBOE Skew
+The CBOE Skew is an independent measure of slope of the implied volatility curve, which measures fear and risk aversion much like the VIX. We expect and observe a negative correlation between this and the SPY returns. We observe a slight negative correlation on the level, though observe a stronger negative correlation on the differenced 20th lag. We will include both into our model. 
+
+```{r SKEW, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SKEW, main="SKEW", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SKEW, data$fwdRet20D, main="Scatterplot", xlab="SKEW", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SKEW)
+
+cor(data$SKEW ,data$fwdRet20D)
+
+SKEW_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$SKEW,20))
+
+data$SKEW_diff <- SKEW_diff
+
+```
+
+### S&P US Equity Risk Premium Index Total Return
+This index appears to act like a mean reversion leading indicator, whereby it measures the excess spread between equity returns and the government yields. While this gap expands, this appears to indicate overbought activity and hence a negative correlation with the markets in the next 20 trading days. We observe a strong negative correlation (-0.23) against the SPY returns. We have also included the 20th lag difference to the model. 
+
+```{r SPUSERPT, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPUSERPT, main="SPUSERPT", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPUSERPT, data$fwdRet20D, main="Scatterplot", xlab="SPUSERPT", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPUSERPT)
+
+cor(data$SPUSERPT ,data$fwdRet20D)
+
+SPUSERPT_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$SPUSERPT,20))
+
+data$SPUSERPT_diff <- SPUSERPT_diff
+
+```
+
+### SPY EPS
+EPS is a main driver for stock prices and we expect the same for the overall index. Larger EPS values indicate a better economy, hence a higher index level can be warranted. We expect and observe a positive correlation between the level and the change. We observed a positive correlation between the EPS variable as well as the 40th differenced lag. We have included both to our model. 
+
+```{r SPX.Index.BEST_EPS, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.BEST_EPS, main="SPX.Index.BEST_EPS", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.BEST_EPS, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.BEST_EPS", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.BEST_EPS)
+
+cor(data$SPX.Index.BEST_EPS ,data$fwdRet20D)
+
+SPX.Index.BEST_EPS_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$SPX.Index.BEST_EPS,40))
+
+data$SPX.Index.BEST_EPS_diff <- SPX.Index.BEST_EPS_diff
+
+```
+
+
+### SPY Enterprise Value to Trailing 12M EBITDA
+We observe a negative correlation on this variable, but a positive correlation on the change over the 10th lag. 
+
+```{r SPX.Index.CURRENT_EV_TO_T12M_EBITDA, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.CURRENT_EV_TO_T12M_EBITDA, main="SPX.Index.CURRENT_EV_TO_T12M_EBITDA", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.CURRENT_EV_TO_T12M_EBITDA, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.CURRENT_EV_TO_T12M_EBITDA", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.CURRENT_EV_TO_T12M_EBITDA)
+
+cor(data$SPX.Index.CURRENT_EV_TO_T12M_EBITDA ,data$fwdRet20D)
+
+SPX.Index.CURRENT_EV_TO_T12M_EBITDA_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$SPX.Index.CURRENT_EV_TO_T12M_EBITDA,40))
+
+data$SPX.Index.CURRENT_EV_TO_T12M_EBITDA_diff <- SPX.Index.CURRENT_EV_TO_T12M_EBITDA_diff
+
+```
+
+
+
+### SPY Dividend Yield
+We observe a strong correlation with the dividend yield level, however we do not observe as strong a correlation on the difference in the lags and hence we will omit adding a differencing variable to the model. The strong positive correlation suggests that the dividend yield acts as a supporting floor to stock prices, as they become bond market equivalents with a higher yield. Yield seeking investors will support the decline in the stock as long as the dividend is sound. 
+
+```{r SPX.Index.EQY_DVD_YLD_12M, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.EQY_DVD_YLD_12M, main="SPX.Index.EQY_DVD_YLD_12M", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.EQY_DVD_YLD_12M, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.EQY_DVD_YLD_12M", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.EQY_DVD_YLD_12M)
+
+cor(data$SPX.Index.EQY_DVD_YLD_12M ,data$fwdRet20D)
+
+```
+
+### SPY Moving Averages
+Moving averages are typically used as technical trading tools. The difference between the moving average versus the level of the SPY index will most likely be positively correlated against the short term (20 days) future movements in stock prices, as breaches in the moving averages typically reflects oversold territories. We believe this makes sense on a fundamental/technical basis, and we observe this in each of the moving averages. 
+
+We hence have added the difference between the moving average and the SPY index level as a feature engineered variable to the model in moving average time period case. 
+
+```{r SPX.Index.MOV_AVG_10D, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.MOV_AVG_10D, main="SPX.Index.MOV_AVG_10D", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.MOV_AVG_10D, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.MOV_AVG_10D", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.MOV_AVG_10D)
+
+summary(data$SPX)
+summary(data$SPX.Index.MOV_AVG_10D)
+
+data$SPX.Index.MOV_AVG_10D_diff <- data$SPX.Index.MOV_AVG_10D - data$SPX
+
+cor(data$SPX.Index.MOV_AVG_10D_diff, data$fwdRet20D)
+cor(data$SPX.Index.MOV_AVG_10D ,data$fwdRet20D)
+
+```
+
+```{r SPX.Index.MOV_AVG_20D, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.MOV_AVG_20D, main="SPX.Index.MOV_AVG_20D", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.MOV_AVG_20D, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.MOV_AVG_20D", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.MOV_AVG_20D)
+
+data$SPX.Index.MOV_AVG_20D_diff <- data$SPX.Index.MOV_AVG_20D - data$SPX
+
+cor(data$SPX.Index.MOV_AVG_20D_diff, data$fwdRet20D)
+cor(data$SPX.Index.MOV_AVG_20D ,data$fwdRet20D)
+
+```
+
+```{r SPX.Index.MOV_AVG_50D, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.MOV_AVG_50D, main="SPX.Index.MOV_AVG_50D", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.MOV_AVG_50D, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.MOV_AVG_50D", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.MOV_AVG_50D)
+
+data$SPX.Index.MOV_AVG_50D_diff <- data$SPX.Index.MOV_AVG_50D - data$SPX
+
+cor(data$SPX.Index.MOV_AVG_50D_diff, data$fwdRet20D)
+cor(data$SPX.Index.MOV_AVG_50D ,data$fwdRet20D)
+
+```
+
+### Percentage of Members above the 200 Day MA
+The percentage of members above the 200 day moving average level indicates positive momentum (or that the trend is not broken as 200 day is usually a very strong support line). A positive correlation is observed and expected. However we notice that the change in this number is negatively correlated to the SPY returns. This could be due to increasing percentages of members above 200 day could indicate overbought activity. 
+
+We believe adding both the differenced variable and the level variable would help capture both market dynamics. 
+
+```{r SPX.Index.PCT_MEMB_ABOVE_MOV_AVG_200D, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.PCT_MEMB_ABOVE_MOV_AVG_200D, main="SPX.Index.PCT_MEMB_ABOVE_MOV_AVG_200D", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.PCT_MEMB_ABOVE_MOV_AVG_200D, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.PCT_MEMB_ABOVE_MOV_AVG_200D", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.PCT_MEMB_ABOVE_MOV_AVG_200D)
+
+cor(data$SPX.Index.PCT_MEMB_ABOVE_MOV_AVG_200D ,data$fwdRet20D)
+
+SPX.Index.PCT_MEMB_ABOVE_MOV_AVG_200D_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$SPX.Index.PCT_MEMB_ABOVE_MOV_AVG_200D,20))
+
+data$SPX.Index.PCT_MEMB_ABOVE_MOV_AVG_200D_diff <- SPX.Index.PCT_MEMB_ABOVE_MOV_AVG_200D_diff
+
+```
+
+### Percentage of members above upper Bollinger Band
+Bollinger bands are bands that have a certain standard deviation from the moving average. A large number of members above this upper band suggests overbought activity and would suspect a negative correlation between the trend and level of this variable. A negative correlation of -0.04 was observed. A strong negative correlation was also noticed on the 40th lag, and hence was also added to the model. 
+
+```{r SPX.Index.PCT_MEMB_PX_ABV_UPPER_BOLL_BAND, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.PCT_MEMB_PX_ABV_UPPER_BOLL_BAND, main="SPX.Index.PCT_MEMB_PX_ABV_UPPER_BOLL_BAND", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.PCT_MEMB_PX_ABV_UPPER_BOLL_BAND, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.PCT_MEMB_PX_ABV_UPPER_BOLL_BAND", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.PCT_MEMB_PX_ABV_UPPER_BOLL_BAND)
+
+cor(data$SPX.Index.PCT_MEMB_PX_ABV_UPPER_BOLL_BAND ,data$fwdRet20D)
+
+SPX.Index.PCT_MEMB_PX_ABV_UPPER_BOLL_BAND_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$SPX.Index.PCT_MEMB_PX_ABV_UPPER_BOLL_BAND,40))
+
+data$SPX.Index.PCT_MEMB_PX_ABV_UPPER_BOLL_BAND_diff <- SPX.Index.PCT_MEMB_PX_ABV_UPPER_BOLL_BAND_diff
+
+```
+
+### Percentage of members below Lower Bollinger Band
+Contrary to the above, we would expect the opposite for this percentage of members below the lower bollinger band (i.e. a positive correlation), as this would indicate oversold territory. This is what we observe and observe a 20 day difference lag correlation. 
+
+```{r SPX.Index.PCT_MEMB_PX_BLW_LWR_BOLL_BAND, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.PCT_MEMB_PX_BLW_LWR_BOLL_BAND, main="SPX.Index.PCT_MEMB_PX_BLW_LWR_BOLL_BAND", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.PCT_MEMB_PX_BLW_LWR_BOLL_BAND, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.PCT_MEMB_PX_BLW_LWR_BOLL_BAND", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.PCT_MEMB_PX_BLW_LWR_BOLL_BAND)
+
+cor(data$SPX.Index.PCT_MEMB_PX_BLW_LWR_BOLL_BAND ,data$fwdRet20D)
+
+SPX.Index.PCT_MEMB_PX_BLW_LWR_BOLL_BAND_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$SPX.Index.PCT_MEMB_PX_BLW_LWR_BOLL_BAND,20))
+
+data$SPX.Index.PCT_MEMB_PX_BLW_LWR_BOLL_BAND_diff <- SPX.Index.PCT_MEMB_PX_BLW_LWR_BOLL_BAND_diff
+
+```
+
+### Percentage Greater than 50 Day MA
+Similar to the percentages of members above the upper bollinger band, we observe negative correlation with the returns. Again, this would suggest overbought activity, or increase in overbought activity in the differencing. A strong negative correlation is also observed for the 40th lag difference and hence will add to our model. 
+
+```{r SPX.Index.PCT_MEMB_PX_GT_50D_MOV_AVG, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.PCT_MEMB_PX_GT_50D_MOV_AVG, main="SPX.Index.PCT_MEMB_PX_GT_50D_MOV_AVG", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.PCT_MEMB_PX_GT_50D_MOV_AVG, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.PCT_MEMB_PX_GT_50D_MOV_AVG", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.PCT_MEMB_PX_GT_50D_MOV_AVG)
+
+cor(data$SPX.Index.PCT_MEMB_PX_GT_50D_MOV_AVG ,data$fwdRet20D)
+
+SPX.Index.PCT_MEMB_PX_GT_50D_MOV_AVG_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$SPX.Index.PCT_MEMB_PX_GT_50D_MOV_AVG,40))
+
+data$SPX.Index.PCT_MEMB_PX_GT_50D_MOV_AVG_diff <- SPX.Index.PCT_MEMB_PX_GT_50D_MOV_AVG_diff
+
+```
+
+### Percentage of Members with New 4w Highs
+Although another indicator for overbought activity, this impact is smaller potentially due to actual improvements in the fundamentals of the company making up the index. The short time frame of this (new 4 weeks versus 52 week high) makes it more of a trading signal more than a fundamental signal, hence a negative correlation (-0.03) is observed. We will also add the 40th differenced lagged variable to our model. 
+
+```{r SPX.Index.PCT_MEMBERS_WITH_NEW_4W_HIGHS, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_HIGHS, main="SPX.Index.PCT_MEMBERS_WITH_NEW_4W_HIGHS", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_HIGHS, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.PCT_MEMBERS_WITH_NEW_4W_HIGHS", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_HIGHS)
+
+cor(data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_HIGHS ,data$fwdRet20D)
+
+SPX.Index.PCT_MEMBERS_WITH_NEW_4W_HIGHS_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_HIGHS,40))
+
+data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_HIGHS_diff <- SPX.Index.PCT_MEMBERS_WITH_NEW_4W_HIGHS_diff
+
+```
+
+### Percentage of Members with New 4w Lows
+The logic applies in the opposite way for this variable compared to the 4w highs, and we would expect the opposite relationship, which is what we observe. A positive correlation of 0.068 is observed. We will also take the 20th lag for a new variable to add to our model. 
+
+```{r SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS, main="SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS)
+
+cor(data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS ,data$fwdRet20D)
+
+SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS_diff <- c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,diff(data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS,20))
+
+data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS_diff <- SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS_diff
+
+```
+
+### SPY PE Ratio
+The PE ratio is a very strong fundamental factor that contributes to stock prices, that indicates whether or not the index is cheap or expensive. We observe a negative relationship to this as high PE ratios tend to indicate overpricing, both on a short and medium term basis unless the fundamentals are improving very rapidly at an unexpected rate. However from history, this does not appear to be the case for the US economy over the past few years. We do not see a meaningful relationship between the changes in the PE ratio with respect to the 20 day return for the SPY, hence will use the level variable only. 
+
+```{r SPX.Index.PE_RATIO, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.PE_RATIO, main="SPX.Index.PE_RATIO", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.PE_RATIO, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.PE_RATIO", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.PE_RATIO)
+
+cor(data$SPX.Index.PE_RATIO ,data$fwdRet20D)
+
+```
+
+### SPY Index
+The actual index itself. The level of the index does not typically infer any information about the upcoming 20 day return, though high SPY levels could indicate potential pullback, hence we observe a negative correlation. 
+
+We believe that changes in this index could be a better indicator (though this would mean historical returns are predictive of future returns), and have chosen both the 1 day and 5 day lag difference to add to our model. 
+
+```{r SPX, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX, main="SPX", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX, data$fwdRet20D, main="Scatterplot", xlab="SPX", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX)
+
+SPX_diff <- c(0,diff(data$SPX,1))
+SPX_diff5 <- c(0,0,0,0,0,diff(data$SPX,5))
+cor(data$SPX ,data$fwdRet20D)
+data$SPX_diff <- SPX_diff
+data$SPX_diff5 <- SPX_diff5
+```
+
+### SPY Relative Strength Indices
+The Relative Strength index is used as a momentum indicator used in technical trading and can indicate overbought or oversold situations. High RSI typically reflect overbought situations and hence will have a negative correlation with SPY returns. We will not investigate changes in RSI since the indicator already capturse changes in stock prices. The popular duration is 14 days, though other durations are used. 
+
+Indices that are lower than 30 will indicate areas of oversold. We created an indicator variable to indicate whether this index is lower than 30. All these indicator variables are highly positively correlated, as the market recovered from its oversold territory, and hence have included them in our model. 
+
+
+```{r SPX.Index.RSI_14D, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.RSI_14D, main="SPX.Index.RSI_14D", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.RSI_14D, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.RSI_14D", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.RSI_14D)
+SPX.Index.RSI_14D_ind_down <- ifelse(data$SPX.Index.RSI_14D <= 30, 1, 0)
+
+cor(data$SPX.Index.RSI_14D ,data$fwdRet20D)
+cor(SPX.Index.RSI_14D_ind_down ,data$fwdRet20D)
+
+data$SPX.Index.RSI_14D_ind_down <- SPX.Index.RSI_14D_ind_down
+
+```
+
+```{r SPX.Index.RSI_30D, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.RSI_30D, main="SPX.Index.RSI_30D", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.RSI_30D, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.RSI_30D", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.RSI_30D)
+
+SPX.Index.RSI_30D_ind_down <- ifelse(data$SPX.Index.RSI_30D <= 30, 1, 0)
+
+cor(data$SPX.Index.RSI_30D ,data$fwdRet20D)
+cor(SPX.Index.RSI_30D_ind_down ,data$fwdRet20D)
+
+data$SPX.Index.RSI_30D_ind_down <- SPX.Index.RSI_30D_ind_down
+```
+
+```{r SPX.Index.RSI_9D, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.RSI_14D, main="SPX.Index.RSI_9D", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.RSI_9D, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.RSI_9D", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.RSI_9D)
+
+SPX.Index.RSI_9D_ind_down <- ifelse(data$SPX.Index.RSI_9D <= 30, 1, 0)
+
+cor(data$SPX.Index.RSI_9D ,data$fwdRet20D)
+cor(SPX.Index.RSI_9D_ind_down ,data$fwdRet20D )
+
+data$SPX.Index.RSI_9D_ind_down <- SPX.Index.RSI_9D_ind_down
+
+```
+
+### SPY Volatility
+The volatility of SPY (with different time horizons) indicates level of fear and stress in the market. We expect and observed a negative correlation between this variable and the returns over the next month. Looking at the change variables, we do not observe significant correlation and hence will use the volatility levels only. 
+
+The period of measure of the volatility indicates the period of stress. The longer the increased level of stress persists, the more likely future returns will suffer as this could indicate something more than a garden variety selloff (i.e. there is something fundamentally deteriorating in the global economy). We observe increased negative correlation as the period of volatility measure is increased. 
+
+```{r SPX.Index.VOLATILITY_10D, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.VOLATILITY_10D, main="SPX.Index.VOLATILITY_10D", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.VOLATILITY_10D, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.VOLATILITY_10D", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.VOLATILITY_10D)
+
+cor(data$SPX.Index.VOLATILITY_10D ,data$fwdRet20D)
+
+```
+
+```{r SPX.Index.VOLATILITY_20D, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.VOLATILITY_20D, main="SPX.Index.VOLATILITY_20D", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.VOLATILITY_20D, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.VOLATILITY_20D", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.VOLATILITY_20D)
+
+cor(data$SPX.Index.VOLATILITY_20D ,data$fwdRet20D)
+
+```
+
+```{r SPX.Index.VOLATILITY_30D, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SPX.Index.VOLATILITY_30D, main="SPX.Index.VOLATILITY_30D", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SPX.Index.VOLATILITY_30D, data$fwdRet20D, main="Scatterplot", xlab="SPX.Index.VOLATILITY_30D", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SPX.Index.VOLATILITY_30D)
+
+cor(data$SPX.Index.VOLATILITY_30D ,data$fwdRet20D)
+
+```
+
+### Summation McClellan Oscillator
+The summation McClellan Oscillator Values (summation of the differences between the number of stocks that close higher versus lower) across time indicates breadth and overall health of the market. It typically oscillate around the 1000 level, since measurse above or below this level indicates overbought or oversold territories. The variable itself showed low correlation. However, we created an indicator variable which is 1 when it is above the 1000 level, and showed strong negative correlation with the 20 day future return, as expected. 
+
+```{r SUM.INX, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$SUM.INX, main="SUM.INX", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$SUM.INX, data$fwdRet20D, main="Scatterplot", xlab="SUM.INX", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$SUM.INX)
+SUM.INX_ind <- ifelse(data$SUM.INX <= 1000, 0, 1)
+cor(data$SUM.INX ,data$fwdRet20D)
+cor(SUM.INX_ind ,data$fwdRet20D)
+
+data$SUM.INX_ind <- SUM.INX_ind
+```
+
+
+### TRADCANY
+The cumulative advance-decline line for NYSE securities. We observe a positive correlation between the index and the future 20 day returns. 
+
+```{r TRADCANY, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$TRADCANY, main="TRADCANY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$TRADCANY, data$fwdRet20D, main="Scatterplot", xlab="TRADCANY", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$TRADCANY)
+
+cor(data$TRADCANY ,data$fwdRet20D)
+
+```
+
+### TRAN
+The Dow Jones Transportation Index indicates the performance of the transportation sector. The transportation sector is known as the prime sector to indicate overall US market/economic health. A higher index indicates improving market health and usually indicates strength in a rally. However, a transporation led rally would most likely not continue in the upcoming 20 days, hence the apparent negative correlation. We will add the 5 day lag since the returns show a higher correlation than the actual index value and we believe this to be more of a driver of future returns. This is consistent with the behaviour we saw with the SPY index. 
+
+```{r TRAN, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$TRAN, main="TRAN", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$TRAN, data$fwdRet20D, main="Scatterplot", xlab="TRAN", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$TRAN)
+
+cor(data$TRAN ,data$fwdRet20D)
+
+TRAN_diff <- c(0,0,0,0,0,diff(data$TRAN,5))
+data$TRAN_diff  <- TRAN_diff 
+
+```
+
+## USD Swap spread 2 Year
+Swap spreads are the difference between market rates for the 2 year swap versus the government bond at the 2 year duration. We observe a strong negative correlation (-0.25) as the swap rates are declining from better financial and broader economic health from better credit swaps being traded. We will not include the differenced lagged terms given the relatively lower correlation observed. 
+
+```{r USSP2.CMPN.Curncy, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$USSP2.CMPN.Curncy, main="USSP2.CMPN.Curncy", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$USSP2.CMPN.Curncy, data$fwdRet20D, main="Scatterplot", xlab="USSP2.CMPN.Curncy", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$USSP2.CMPN.Curncy)
+
+cor(data$USSP2.CMPN.Curncy ,data$fwdRet20D)
+```
+
+### USD Swap spread 10 Year
+We obseve the same behavior in the 10 year swap spread. 
+
+```{r USSW10.CMPN.Curncy, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$USSW10.CMPN.Curncy, main="USSW10.CMPN.Curncy", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$USSW10.CMPN.Curncy, data$fwdRet20D, main="Scatterplot", xlab="USSW10.CMPN.Curncy", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$USSW10.CMPN.Curncy)
+
+cor(data$USSW10.CMPN.Curncy ,data$fwdRet20D)
+```
+
+### VIX
+Although VIX is typically known as a fear barometer (calculated from options traded), it typically spikes high in periods of selloffs. However, the market has been extremely resilient of late, where buying into dips has been a time proved strategy. The positive correlation between the VIX and the 20 day return in the SPY is thus not surprising. We will add the 5 day lag difference of the VIX to the model. 
+
+```{r VIX, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$VIX, main="VIX", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$VIX, data$fwdRet20D, main="Scatterplot", xlab="VIX", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$VIX)
+
+cor(data$VIX,data$fwdRet20D)
+
+VIX_diff <- c(0,0,0,0,0,diff(data$VIX,5))
+data$VIX_diff  <- VIX_diff
+```
+
+### SPY Volume
+Volume could indicate buying or selling pressure. Typically large funds dump futures and the ETFs when economy becomes bad and load up gradually, which might create the negative correlation on its own. We think that the interaction between the cumulative volume and the price action in SPY would be more telling. We investigated the interaction between different time periods price percentage change in the SPY and the cumulative volume. We included the 5th period to the model. 
+
+```{r VOLSPX, echo=TRUE}
+library(zoo)
+
+par(mfrow=c(2,2))
+plot.ts(data$VOLSPX, main="VOLSPX", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$VOLSPX, data$fwdRet20D, main="Scatterplot", xlab="VOLSPX", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$VOLSPX)
+
+VOLSPX_ChangeSPX <- data$VOLSPX * c(0,diff(data$SPX,1))/data$SPX
+VOLSPX_ChangeSPX5 <- rollsumr(data$VOLSPX, k=5, fill=0) * c(0,0,0,0,0,diff(data$SPX,5))/data$SPX
+
+VOLSPX_ChangeSPX10 <- rollsumr(data$VOLSPX, k=10, fill=0) * c(0,0,0,0,0,0,0,0,0,0,diff(data$SPX,10))/data$SPX
+
+cor(data$VOLSPX,data$fwdRet20D)
+cor(VOLSPX_ChangeSPX, data$fwdRet20D)
+cor(VOLSPX_ChangeSPX5, data$fwdRet20D)
+cor(VOLSPX_ChangeSPX10, data$fwdRet20D)
+
+data$VOLSPX_ChangeSPX5 <- VOLSPX_ChangeSPX5 
+```
+
+
+###  Moving Averages for SPY Volume
+This is a technical indicator relating to SPY volume. We explore whether large excess in volume compared to the ordinary, matched by the return (up or down) will be any indicator of selloffs.
+
+```{r VOLSPX.Index.MOV_AVG_10D, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$VOLSPX.Index.MOV_AVG_10D, main="VOLSPX.Index.MOV_AVG_10D", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$VOLSPX.Index.MOV_AVG_10D, data$fwdRet20D, main="Scatterplot", xlab="VOLSPX.Index.MOV_AVG_10D", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$VOLSPX.Index.MOV_AVG_10D)
+
+VOLSPX.Index.MOV_AVG_10D_excess <- max((data$VOLSPX - data$VOLSPX.Index.MOV_AVG_10D),0)*c(0,diff(data$SPX,1))/data$SPX
+
+cor(data$VOLSPX.Index.MOV_AVG_10D,data$fwdRet20D)
+cor(VOLSPX.Index.MOV_AVG_10D_excess,data$fwdRet20D)
+data$VOLSPX.Index.MOV_AVG_10D_excess <- VOLSPX.Index.MOV_AVG_10D_excess
+
+```
+
+```{r VOLSPX.Index.MOV_AVG_20D, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$VOLSPX.Index.MOV_AVG_20D, main="VOLSPX.Index.MOV_AVG_20D", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$VOLSPX.Index.MOV_AVG_20D, data$fwdRet20D, main="Scatterplot", xlab="VOLSPX.Index.MOV_AVG_20D", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$VOLSPX.Index.MOV_AVG_20D)
+
+VOLSPX.Index.MOV_AVG_20D_excess <- max((data$VOLSPX - data$VOLSPX.Index.MOV_AVG_20D),0)*c(0,diff(data$SPX,1))/data$SPX
+
+cor(data$VOLSPX.Index.MOV_AVG_20D,data$fwdRet20D)
+cor(VOLSPX.Index.MOV_AVG_20D_excess,data$fwdRet20D)
+
+data$VOLSPX.Index.MOV_AVG_20D_excess <- VOLSPX.Index.MOV_AVG_20D_excess
+```
+
+```{r VOLSPX.Index.MOV_AVG_50D, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$VOLSPX.Index.MOV_AVG_50D, main="VOLSPX.Index.MOV_AVG_50D", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$VOLSPX.Index.MOV_AVG_50D, data$fwdRet20D, main="Scatterplot", xlab="VOLSPX.Index.MOV_AVG_50D", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$VOLSPX.Index.MOV_AVG_50D)
+
+VOLSPX.Index.MOV_AVG_50D_excess <- max((data$VOLSPX - data$VOLSPX.Index.MOV_AVG_50D),0)*c(0,diff(data$SPX,1))/data$SPX
+
+cor(data$VOLSPX.Index.MOV_AVG_50D,data$fwdRet20D)
+cor(VOLSPX.Index.MOV_AVG_50D_excess,data$fwdRet20D)
+
+data$VOLSPX.Index.MOV_AVG_50D_excess <- VOLSPX.Index.MOV_AVG_50D_excess
+```
+
+###  Philadelphia Gold and Silver Index
+Gold and silver are precious metals that rise when the market falls. We expect the correlation of the value of the index to the SPY/returns to be positive in the long run due to general inflation, however, we would expect returns in the index to be negatively correlated with SPY returns. 
+
+We have chosen the 5th lag from the correlation analysis below. 
+
+```{r XAU, echo=TRUE}
+par(mfrow=c(2,2))
+plot.ts(data$XAU, main="XAU", col="blue", ylab="", xlab="", xlim = c(0,3521))
+plot(data$XAU, data$fwdRet20D, main="Scatterplot", xlab="XAU", ylab="Return of SPY", pch=19)
+plot.ts(data$SPX, main="SPY", col="blue", ylab="", xlab="", xlim = c(0,3521))
+lag.corr(data$fwdRet20D, data$XAU)
+
+XAU_diff <- c(0,0,0,0,0,diff(data$XAU,5))
+cor(data$XAU,data$fwdRet20D)
+
+data$XAU_diff <- XAU_diff
+```
+
+### Dates Feature Engineering
+We looked at feature engineering for our date variable as well. We suspect there could be patterns in certain months or days in the year, since funds typically start buying at the beginning of the year, as well as near the end of the year to show performance numbers for the year. Hence we created a variable for the month and year and will remove the actual date variable. Looking at average returns across the year by days it is apparent that there are some patterns that can be observed. The first and last periods of the year appeared to show more positive returns that the middle of the year. 
+
+Removal of variables will occur in an exercise detailed in Section 2, where we compare the performance of the model that uses the variables that have the highest importance, compared to the entire set. We will export our featured engineered variables along side the variables provided, which will be ready for training. 
+
+```{r Dates, echo=TRUE}
+data$date_ <- as.Date(data$date_)
+data$month_ <- as.numeric(format(data$date_, "%m"))
+data$year_ <- as.numeric(format(data$date_, "%y"))
+
+library(dplyr)
+fwdRet20D_ave <- summarise(group_by(data, DOY), mean(fwdRet20D, na.rm=TRUE))
+names(fwdRet20D_ave)[2] <- paste("fwdRet20D_ave")
+ggplot(fwdRet20D_ave, aes(x=DOY, y=fwdRet20D_ave)) + geom_point()
+
+```
+
+We will remove the first 40 entries due to the maximum lag we have put in place, and output the data. We will drop the date variable prior to any training, as we have captured any seasonality and monthly patterns in the feature engineered date variables. 
+
+```{r Final Data Cleaning and Output, echo=TRUE}
+#Remove the first 40 entries
+data <- data[41:nrow(data), ]
+
+train_data <- data
+
+#Output train data
+write.csv(train_data, file = "train.csv")
+
+#Drop the date variable prior to training
+train_data$date_ <- NULL
+
+```
+
+## Lagged Predicted Variable
+The problem we are trying to solve would be to predict whether the S&P will be up or down over a period of 20 trading days from today. The lagged predicted variable and the predicted variable would thus be highly correlated. However, we cannot include a lagged predicted variable in modeling our data, because we will have no idea what the upcoming 20 forward returns are, i.e. we are not trying to predict just the 19th day in the future's performance given the returns prior. 
+
+Hence we will not and should not be adding the lagged predicted variable into our model. 
+
+## Initial variable importance analysis
+First point to note is that there is no single measure of variable importance. In this section, we will take an exploratory look at what variable might be of the most significance to the model. We will re-explore variable importance of our actual model once we fit our machine learning model (known as Long Short Term Memory model) as well. Please refer to Section 2 for the actual variable importance analysis of our machine learning model. 
+
+As demonstrated earlier, correlation between the predicted variable and the variables in the model is a measure of variable importance. 
+
+### Correlation 
+
+Correlation is a measure of connection between two variables. The Pearson-rho is calculated across each pair of variable in the model. However, we are not particularly concerned about correlation between explanatory variables, as machine learning algorithms tend to work well even with correlated inputs. 
+
+We have sorted and graphed the correlations between each of the explanatory variables versus the predicted variable (i.e. the SPY 20 day future returns).
+
+```{r Correlation Matrix, echo=FALSE}
+library(ggcorrplot)
+corr <- round(cor(train_data), 3)
+
+corr <- data.frame(row.names(corr), corr, row.names = NULL)
+correlation_spy <- corr[,1:2]
+correlation_spy = filter(correlation_spy,row.names.corr.!="fwdRet20D")
+correlation_spy = mutate(correlation_spy,fwdRet20DAbs = abs(fwdRet20D))
+correlation_spy = mutate(correlation_spy,sort(fwdRet20DAbs))
+correlation_spy = correlation_spy[with(correlation_spy,order(fwdRet20DAbs)),]
+
+ggplot(correlation_spy, aes(x =reorder(row.names.corr.,fwdRet20DAbs), y =fwdRet20DAbs))+
+       geom_bar(stat="identity", width = 0.7,
+                fill= ifelse(correlation_spy$fwdRet20D > 0,
+                            rgb(56,146,208, maxColorValue = 255),
+                            rgb(227,111,30, maxColorValue=255))) +
+         geom_text(aes(label=format(row.names.corr.),
+                       hjust=ifelse(fwdRet20DAbs > 0,0,0)),
+                       size=0.75)+
+         scale_y_continuous(breaks= seq(0,1,by=0.01),
+                            limits= c(0,max(correlation_spy$fwdRet20DAbs))) +
+         labs(x="",y="",title="Correlation") +
+         theme(axis.text.x = element_text(angle = 45,size  = 6),
+               axis.text.y = element_text(size  = 2.25, hjust = 1),
+               panel.background = element_blank(),
+               #panel.grid.minor = element_blank(),
+               axis.ticks  = element_blank(),
+               axis.line   = element_line(colour=NA),
+               axis.line.x = element_line(colour="grey80")) +
+         coord_flip()
+
+```
+
+## Feature selection (further discussion in Section 2): Appendix Code
+Feature selection represents the art of including and excluding certain variables in a model. There are multiple ways of doing this. For example, features can be excluded based on the least correlation with the predicted variable, or in our example we will be excluding variables based on their least importance to each of our machine learning models (more details on that in Section 2). This is also known as a wrapper method of feature selection using backward elimination. Other methods include foward inclusion (which is to add variables iteratively), or the use of embedded methods such as the use of regularization parameters. Regularization parameters penalize large number of variables, hence impacts the loss function. 
+
+Based on the rankings of variable importance as listed in Section 2 (see Section 2: Variable Importance), we will perform removal of variables for each of the models here, and rerun the models to compare whether removal of certain variables will improve the performance of the model. The results of this will be discussed in detail in Section 2.
+
+```{r Feature Selection, echo=TRUE}
+rmse_data <- data
+rmse_data$SPX.Index.PE_Ratio <- NULL
+rmse_data$SPX.Index.MOV_AVG_20D <- NULL
+rmse_data$GSERMAJ <- NULL
+rmse_data$month_ <- NULL
+rmse_data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS <- NULL
+rmse_data$CCI <- NULL
+rmse_data$SPX_diff5 <- NULL
+rmse_data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS_diff <- NULL
+rmse_data$GSERMEA <- NULL
+rmse_data$BASPTDSP <- NULL
+rmse_data$SPUSERTP_diff <- NULL
+rmse_data$GFSI <- NULL
+rmse_data$C01.Comdty <- NULL
+rmse_data$CLF.CFSI <- NULL
+rmse_data$VOLSPX.Index.MOV_AVG_50D_excess <- NULL
+rmse_data$SPX <- NULL
+rmse_data$CL1.Comdty <- NULL
+rmse_data$BDIY <- NULL
+rmse_data$SPX.Index.BEST_EPS_diff <- NULL
+rmse_data$SPX.Index.MOV_AVG_10D <- NULL
+rmse_data$DOY <- NULL
+rmse_data$SKEW_diff <- NULL
+rmse_data$CSFB <- NULL
+rmse_data$DXY.Curncy <- NULL
+rmse_data$PCUSEQTR_diff <- NULL
+rmse_data$SPX.Index.MOV_AVG_50D <- NULL
+rmse_data$SPX_diff <- NULL
+rmse_data$CSI.BARC <- NULL
+rmse_data$MRI.CITI_diff <- NULL
+rmse_data$SPX.Index.PCT_MEMB_ABOVE_MOV_AVG_200D <- NULL
+rmse_data$SPX.Index.MOV_AVG_20D_diff <- NULL
+rmse_data$VOLSPX.Index.MOV_AVG_20D<- NULL
+rmse_data$PCT_MEMB_PX_GT_50D_MOV_AVG_diff <- NULL
+rmse_data$SPX.Index.RSI_14D_ind_down  <- NULL
+rmse_data$GSERMWD <- NULL
+rmse_data$GSERMUS <- NULL
+rmse_data$XAU_diff <- NULL
+
+write.csv(rmse_data, file = "rmse_train.csv")
+
+binary_data <- data
+binary_data$HG1.Comodty<- NULL
+binary_data$SKEW<- NULL
+binary_data$SPX.Index.PCT_MEMB_ABOVE_MOV_AVG_200D<- NULL
+binary_data$GSERMUS<- NULL
+binary_data$LF98TRUU<- NULL
+binary_data$DXY.Cumcy<- NULL
+binary_data$GSERMWD<- NULL
+binary_data$SPUSERPT<- NULL
+binary_data$SPX.Index.MOV_AVG_20D<- NULL
+binary_data$SPX.Index.MOV_AVG_50D<- NULL
+binary_data$GSERMEA<- NULL
+binary_data$CCI<- NULL
+binary_data$SPX.Index.MOV_AVG_10D<- NULL
+binary_data$SPX<- NULL
+binary_data$CL1.Comdty<- NULL
+binary_data$GFSI<- NULL
+binary_data$IRISISOL<- NULL
+binary_data$SPX.Index.PCT_MEMB_PX_ABV_UPPER_BOLL_BAND<- NULL
+binary_data$SPX.Index.PE_RATIO<- NULL
+binary_data$CLF.CFSI<- NULL
+binary_data$GSERMAJ<- NULL
+binary_data$BDIY<- NULL
+binary_data$SPX.Index.PCT_MEMBERS_WITH_NEW_4W_LOWS<- NULL
+binary_data$IBOXHY<- NULL
+binary_data$ISKEIFX<- NULL
+binary_data$CSI.BARC<- NULL
+binary_data$BASPTDSP<- NULL
+binary_data$DOY<- NULL
+binary_data$IRISIMKT<- NULL
+binary_data$SPX.Index.EQY_DVD_YLD_12M<- NULL
+binary_data$ISKEIEQ<- NULL
+binary_data$SPX.Index.PCT_MEMB_PX_GT_50D_MOV_AVG<- NULL
+binary_data$SPX.Index.CURRENT_EV_TO_T12M_EBITDA<- NULL
+binary_data$IRISILIQ<- NULL
+binary_data$CSFB<- NULL
+binary_data$IFLOIMM<- NULL
+binary_data$CO1.Comodty<- NULL
+binary_data$IFLOIVOL<- NULL
+binary_data$SPX.Index.BEST_EPS<- NULL
+binary_data$SPX.Index.PCT_MEMB_PX_BLW_LWR_BOLL_BAND<- NULL
+
+write.csv(binary_data, file = "binary_train.csv")
+```
